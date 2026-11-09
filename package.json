@@ -1,0 +1,16 @@
+{
+  "name": "baccarat-aml",
+  "version": "1.0.0",
+  "description": "Baccarat API + BCR-AML",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^4.21.1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

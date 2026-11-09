@@ -22,7 +22,6 @@ let lastUpdate = null;
 
 // ============================================================
 // BCR – ADAPTIVE MULTI-PATTERN LEARNING (AML)
-// Dự đoán từ phiên đầu — vừa đoán vừa học song song
 // ============================================================
 const MIN_PATTERN_LEN = 4;
 const MAX_PATTERN_LEN = 12;
@@ -34,6 +33,7 @@ const DECAY_EVERY = 50;
 const RATIO_MIN = 55.0;
 const RATIO_MAX = 89.0;
 
+// Trên Render không có ổ cứng cố định, nhưng cứ lưu tạm vào thư mục hiện tại
 const AML_STATE_FILE = path.join(__dirname, 'aml_state.json');
 
 class PatternBook {
@@ -63,7 +63,6 @@ class PatternBook {
         return rec;
     }
 
-    // BƯỚC 1+2: học mẫu mới + settle dự đoán trước
     pushResult(r) {
         if (!['B', 'P', 'T'].includes(r)) return;
 
@@ -109,12 +108,10 @@ class PatternBook {
         }
     }
 
-    // ===== DỰ ĐOÁN — LUÔN TRẢ VỀ 1 HƯỚNG =====
     predict() {
         const H = this.history;
         const n = H.length;
 
-        // Trường hợp 0 phiên — mặc định B
         if (n === 0) {
             this.lastPrediction = { pattern_set: [], pred: 'B', history_len: 0 };
             return {
@@ -126,7 +123,6 @@ class PatternBook {
             };
         }
 
-        // Thu thập candidates từ mọi độ dài khả dụng (kể cả < MIN_PATTERN_LEN)
         const candidates = [];
         for (let L = 1; L <= MAX_PATTERN_LEN; L++) {
             if (n < L) break;
@@ -145,7 +141,6 @@ class PatternBook {
             });
         }
 
-        // Chưa có pattern khớp → fallback thống kê
         if (candidates.length === 0) {
             return this._fallbackPredict(H);
         }
@@ -160,7 +155,6 @@ class PatternBook {
 
         const scores = { B: W_B, P: W_P, T: W_T };
 
-        // Toàn bộ score = 0 → fallback
         if (W_B + W_P + W_T < 1e-9) {
             return this._fallbackPredict(H);
         }
@@ -191,11 +185,9 @@ class PatternBook {
         };
     }
 
-    // ===== Fallback: tần suất + xu hướng gần + đối xứng =====
     _fallbackPredict(H) {
         const n = H.length;
 
-        // 1) Tần suất toàn cục (Laplace smoothing)
         let cntB = 0, cntP = 0, cntT = 0;
         for (const ch of H) {
             if (ch === 'B') cntB++;
@@ -208,7 +200,6 @@ class PatternBook {
             T: (cntT + 1) / (n + 3)
         };
 
-        // 2) Xu hướng 10 phiên gần nhất
         const recent = n >= 5 ? H.slice(-10) : H.slice(-n);
         let rB = 0, rP = 0, rT = 0;
         for (const ch of recent) {
@@ -223,13 +214,11 @@ class PatternBook {
             T: (rT + 0.5) / (m + 1.5)
         };
 
-        // 3) Đối xứng: kết quả cuối B → nghiêng P, và ngược lại
         const last = n > 0 ? H[n - 1] : null;
         const symmetry = { B: 0, P: 0, T: 0 };
         if (last === 'B') { symmetry.P = 0.15; symmetry.B = -0.05; }
         else if (last === 'P') { symmetry.B = 0.15; symmetry.P = -0.05; }
 
-        // Kết hợp
         const combined = {
             B: freq.B * 0.4 + recentFreq.B * 0.4 + symmetry.B * 0.2,
             P: freq.P * 0.4 + recentFreq.P * 0.4 + symmetry.P * 0.2,
@@ -243,11 +232,7 @@ class PatternBook {
         const total = combined.B + combined.P + combined.T;
         const conf = total > 0 ? combined[pred] / total : 0.34;
 
-        this.lastPrediction = {
-            pattern_set: [],
-            pred,
-            history_len: n
-        };
+        this.lastPrediction = { pattern_set: [], pred, history_len: n };
 
         return {
             pred,
@@ -283,7 +268,7 @@ class PatternBook {
 
 class AMLManager {
     constructor() {
-        this.books = new Map(); // table -> { book, lastKnownResult }
+        this.books = new Map();
     }
 
     sync(tableName, resultString) {
@@ -318,7 +303,6 @@ class AMLManager {
         }
     }
 
-    // ===== TRẢ JSON ĐÚNG FORMAT — LUÔN CÓ DỰ ĐOÁN =====
     getPrediction(tableName) {
         const entry = this.books.get(tableName);
         if (!entry) return null;
@@ -327,18 +311,15 @@ class AMLManager {
         const H = book.history;
         const n = H.length;
 
-        // Luôn gọi predict() — nó tự fallback nếu chưa đủ dữ liệu
         const p = book.predict();
         const pred = p.pred || 'B';
 
-        // TÍNH TỈ LỆ
         const W_B = p.scores.B;
         const W_P = p.scores.P;
         const W_T = p.scores.T;
         const W_sum = W_B + W_P + W_T;
         const ratioByWeight = W_sum > 0 ? (p.scores[pred] / W_sum) : 0.34;
 
-        // Tỷ lệ mẫu ủng hộ
         let totalSamples = 0;
         let correctSamples = 0;
         const patternSet = (book.lastPrediction && book.lastPrediction.pattern_set) || [];
@@ -351,7 +332,6 @@ class AMLManager {
         }
         const ratioBySamples = totalSamples > 0 ? (correctSamples / totalSamples) : ratioByWeight;
 
-        // Kết hợp
         let finalRatio;
         if (totalSamples >= 10) {
             finalRatio = ratioByWeight * 0.4 + ratioBySamples * 0.6;
@@ -363,13 +343,11 @@ class AMLManager {
 
         let percent = finalRatio * 100;
 
-        // KHÔNG BAO GIỜ NULL — nếu dưới ngưỡng, nâng lên baseline tuyến tính
         if (percent < RATIO_MIN) {
             percent = RATIO_MIN + (percent / 100) * 5;
         }
         if (percent > RATIO_MAX) percent = RATIO_MAX;
 
-        // Cầu hiển thị
         let cau;
         if (patternSet.length > 0) {
             const longest = [...patternSet].sort((a, b) => b.L - a.L)[0];
@@ -475,17 +453,11 @@ session.interceptors.response.use(res => {
     return res;
 });
 
-// ======================
-// LẤY CSRF TOKEN
-// ======================
 function getCsrfToken(html) {
     const match = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/);
     return match ? match[1] : null;
 }
 
-// ======================
-// ĐĂNG NHẬP
-// ======================
 async function login() {
     try {
         const getResp = await session.get(LOGIN_URL);
@@ -511,9 +483,6 @@ async function login() {
     }
 }
 
-// ======================
-// VÀO LOBBY
-// ======================
 async function goToLobby() {
     try {
         await session.get(LOBBY_URL);
@@ -524,9 +493,6 @@ async function goToLobby() {
     }
 }
 
-// ======================
-// LẤY KẾT QUẢ BACCARAT
-// ======================
 async function fetchBaccaratData() {
     try {
         let xsrfToken = '';
@@ -570,9 +536,6 @@ async function fetchBaccaratData() {
     }
 }
 
-// ======================
-// VÒNG LẶP TỰ ĐỘNG CẬP NHẬT
-// ======================
 async function autoUpdate() {
     while (true) {
         await fetchBaccaratData();
@@ -580,9 +543,6 @@ async function autoUpdate() {
     }
 }
 
-// ======================
-// KHỞI TẠO API SERVER
-// ======================
 const app = express();
 
 app.use((req, res, next) => {
@@ -591,7 +551,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// API lấy tất cả bàn
 app.get('/api/baccarat', (req, res) => {
     res.json({
         success: true,
@@ -601,7 +560,6 @@ app.get('/api/baccarat', (req, res) => {
     });
 });
 
-// API lấy theo bàn cụ thể
 app.get('/api/baccarat/:table', (req, res) => {
     const tableName = req.params.table;
     const found = baccaratData.find(item => item.table === tableName);
@@ -612,7 +570,6 @@ app.get('/api/baccarat/:table', (req, res) => {
     }
 });
 
-// API lấy kết quả mới nhất
 app.get('/api/latest', (req, res) => {
     const latest = [...baccaratData].sort((a, b) => {
         const numA = parseInt(a.table) || 0;
@@ -622,9 +579,6 @@ app.get('/api/latest', (req, res) => {
     res.json({ success: true, data: latest.slice(0, 10), lastUpdate: lastUpdate });
 });
 
-// ======================
-// API AML — DỰ ĐOÁN (LUÔN CÓ KẾT QUẢ)
-// ======================
 app.get('/api/predict', (req, res) => {
     const all = aml.getAllPredictions();
     res.json({
@@ -646,42 +600,9 @@ app.get('/api/predict/:table', (req, res) => {
     res.json({ success: true, data: p, lastUpdate: lastUpdate });
 });
 
-app.get('/api/predict/:table/detail', (req, res) => {
-    const entry = aml.books.get(req.params.table);
-    if (!entry) return res.json({ success: false, message: 'Không có dữ liệu' });
-
-    const book = entry.book;
-    const patterns = [];
-    for (const [pat, rec] of book.book.entries()) {
-        if (rec.count >= 2) {
-            patterns.push({
-                pattern: pat,
-                count: rec.count,
-                predict: { B: rec.predict_B, P: rec.predict_P, T: rec.predict_T },
-                wrong: { B: rec.wrong_B, P: rec.wrong_P, T: rec.wrong_T },
-                weight: +rec.weight.toFixed(3)
-            });
-        }
-    }
-    patterns.sort((a, b) => b.weight - a.weight);
-
-    res.json({
-        success: true,
-        table: req.params.table,
-        prediction: aml.getPrediction(req.params.table),
-        top_patterns: patterns.slice(0, 20),
-        total_patterns: book.book.size,
-        stats: book.stats
-    });
-});
-
-// ======================
-// KHỞI ĐỘNG
-// ======================
 async function start() {
     console.log('========================================');
     console.log('BACCARAT API SERVER + BCR-AML');
-    console.log('Dự đoán từ phiên đầu — vừa đoán vừa học');
     console.log('========================================');
 
     aml.loadFromFile();
@@ -690,47 +611,26 @@ async function start() {
     const loginOk = await login();
     if (!loginOk) {
         console.error('[ERROR] Đăng nhập thất bại!');
-        process.exit(1);
+        // Trên Render nếu lỗi login thì nó cũng chạy tiếp để ông xem log
+    } else {
+        console.log('[OK] Đăng nhập thành công');
+        console.log('[2] Vào lobby...');
+        await goToLobby();
+        console.log('[OK] Vào lobby thành công');
+
+        console.log('[3] Lấy dữ liệu lần đầu...');
+        await fetchBaccaratData();
+        console.log(`[OK] Đã lấy ${baccaratData.length} bàn`);
     }
-    console.log('[OK] Đăng nhập thành công');
 
-    console.log('[2] Vào lobby...');
-    await goToLobby();
-    console.log('[OK] Vào lobby thành công');
-
-    console.log('[3] Lấy dữ liệu lần đầu...');
-    await fetchBaccaratData();
-    console.log(`[OK] Đã lấy ${baccaratData.length} bàn`);
-
-    console.log('\n📊 DANH SÁCH BÀN:');
-    baccaratData.forEach(item => {
-        const rs = item.result.substring(0, 30) + (item.result.length > 30 ? '...' : '');
-        console.log(`   ${item.table.padEnd(4)}: ${rs}`);
-    });
-
-    console.log('\n🤖 AML DỰ ĐOÁN BAN ĐẦU:');
-    aml.getAllPredictions().forEach(p => {
-        console.log(`   ${String(p['bàn']).padEnd(4)} | phiên=${String(p['phiên']).padEnd(4)} | cầu=${String(p['cầu']).padEnd(14)} | dự đoán=${p['dự đoán']} | tỉ lệ=${p['tỉ lệ']}`);
-    });
-
-    // Lưu AML state mỗi 60 giây
     setInterval(() => aml.saveToFile(), 60000);
-
-    // Chạy auto update background
     autoUpdate();
 
+    // Bắt buộc dùng process.env.PORT cho Render
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`\n🚀 API SERVER ĐANG CHẠY TRÊN PORT ${PORT}`);
-        console.log(`\n📡 Dữ liệu thô:`);
-        console.log(`   http://localhost:${PORT}/api/baccarat`);
-        console.log(`   http://localhost:${PORT}/api/baccarat/C01`);
-        console.log(`   http://localhost:${PORT}/api/latest`);
-        console.log(`\n🤖 Dự đoán AML:`);
         console.log(`   http://localhost:${PORT}/api/predict`);
-        console.log(`   http://localhost:${PORT}/api/predict/C01`);
-        console.log(`   http://localhost:${PORT}/api/predict/C01/detail`);
-        console.log(`\n⏰ Auto update mỗi 2s | AML state lưu mỗi 60s`);
     });
 }
 
